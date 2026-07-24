@@ -196,6 +196,29 @@ var task2 = downloader.DownloadAsync(new DownloadTask
 await Task.WhenAll(task1, task2);
 ```
 
+### 暂停 / 恢复 / 停止
+
+```csharp
+downloader.Pause();              // 暂停：不再取新任务，活跃下载 Cancel 后回队等待
+Console.WriteLine(downloader.IsPaused); // true
+
+await Task.Delay(5000);
+downloader.Resume();             // 恢复：Worker 继续消费队列，被中断的切片从头重试
+
+await downloader.StopAsync();    // 停止：取消全部活跃下载，未完成任务标记失败，清空队列
+                                 // 引擎可复用，再次 DownloadAsync 即可
+
+// Dispose 会彻底销毁引擎（不可复用）
+// downloader.Dispose();
+```
+
+| 操作 | 活跃下载 | 队列 | 引擎状态 | 可复用 |
+|:---|:---|:---|:---|:---|
+| `Pause()` | Cancel 回队 | 阻塞不消费 | 运行中 | 是 |
+| `Resume()` | 继续从头下载 | 恢复消费 | 运行中 | 是 |
+| `StopAsync()` | 全部 Cancel | 清空 | 运行中 | 是 |
+| `Dispose()` | 全部 Cancel | 清空 | 销毁 | 否 |
+
 ### 按 URL 配置独立重试规则
 
 ```csharp
