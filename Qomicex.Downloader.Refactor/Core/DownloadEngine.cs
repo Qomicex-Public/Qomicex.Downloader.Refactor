@@ -48,9 +48,14 @@ internal sealed class DownloadEngine : IDisposable
 
     private readonly Channel<DownloadUnit> _workChannel;
     private readonly ConcurrentDictionary<string, TaskTracker> _trackers = new();
+    private readonly object _pauseLock = new();
     private CancellationTokenSource? _cts;
     private Task? _workersTask;
+    private TaskCompletionSource _pauseTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile bool _paused;
     private int _activeCount;
+
+    public bool IsPaused => _paused;
 
     public DownloadEngine(DownloaderOptions options)
     {
@@ -98,11 +103,32 @@ internal sealed class DownloadEngine : IDisposable
         {
             while (await _workChannel.Reader.WaitToReadAsync(ct))
             {
+                await WaitIfPausedAsync();
+
                 while (_workChannel.Reader.TryRead(out var unit))
+                {
+                    if (_paused)
+                    {
+                        await _workChannel.Writer.WriteAsync(unit, ct);
+                        break;
+                    }
+
                     await ProcessUnit(unit, ct);
+                }
             }
         }
         catch (OperationCanceledException) { }
+    }
+
+    private async Task WaitIfPausedAsync()
+    {
+        TaskCompletionSource tcs;
+        lock (_pauseLock)
+        {
+            if (!_paused) return;
+            tcs = _pauseTcs;
+        }
+        await tcs.Task;
     }
 
     public async Task<DownloadResult> EnqueueAsync(DownloadTask task, CancellationToken ct = default)
@@ -145,6 +171,59 @@ internal sealed class DownloadEngine : IDisposable
             results.Add(await tracker.Tcs.Task);
         }
         return results;
+    }
+
+    public void Pause()
+    {
+        lock (_pauseLock)
+        {
+            if (_paused) return;
+            _paused = true;
+            _pauseTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        foreach (var tracker in _trackers.Values)
+        {
+            foreach (var unit in tracker.Units)
+            {
+                if (unit.Status == DownloadUnitStatus.Downloading)
+                    unit.Cts.Cancel();
+            }
+        }
+    }
+
+    public void Resume()
+    {
+        lock (_pauseLock)
+        {
+            if (!_paused) return;
+            _paused = false;
+            _pauseTcs.TrySetResult();
+        }
+    }
+
+    public async Task StopAsync()
+    {
+        Pause();
+
+        await Task.Delay(200);
+
+        var trackers = _trackers.Values.ToArray();
+        foreach (var tracker in trackers)
+        {
+            foreach (var unit in tracker.Units)
+                unit.Cts.Cancel();
+        }
+
+        await Task.Delay(100);
+
+        foreach (var tracker in trackers)
+        {
+            if (tracker.State != TaskState.Finalized)
+                FinalizeTracker(tracker, success: false);
+        }
+
+        while (_workChannel.Reader.TryRead(out _)) { }
     }
 
     private async Task EnqueueUnitsAsync(List<DownloadUnit> units, CancellationToken ct)

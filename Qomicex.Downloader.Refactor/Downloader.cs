@@ -8,6 +8,8 @@ public class Downloader : IDisposable
 {
     private readonly DownloadEngine _engine;
 
+    public bool IsPaused => _engine.IsPaused;
+
     public Downloader(DownloaderOptions options)
     {
         _engine = new DownloadEngine(options);
@@ -30,6 +32,21 @@ public class Downloader : IDisposable
         CancellationToken ct = default)
     {
         return _engine.EnqueueBatchAsync(tasks, ct);
+    }
+
+    public void Pause()
+    {
+        _engine.Pause();
+    }
+
+    public void Resume()
+    {
+        _engine.Resume();
+    }
+
+    public Task StopAsync()
+    {
+        return _engine.StopAsync();
     }
 
     public void Dispose()
