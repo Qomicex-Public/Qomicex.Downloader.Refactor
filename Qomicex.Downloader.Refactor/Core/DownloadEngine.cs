@@ -408,8 +408,6 @@ internal sealed class DownloadEngine : IDisposable
         tracker.State = TaskState.Finalized;
         tracker.Timer.Stop();
 
-        _trackers.TryRemove(tracker.Task.Id, out _);
-
         tracker.Tcs.TrySetResult(new DownloadResult
         {
             TaskId = tracker.Task.Id,
