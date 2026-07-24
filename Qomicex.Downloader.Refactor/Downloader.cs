@@ -49,6 +49,21 @@ public class Downloader : IDisposable
         return _engine.StopAsync();
     }
 
+    public Task CancelAsync()
+    {
+        return _engine.StopAsync();
+    }
+
+    public Task CancelTaskAsync(string taskId)
+    {
+        return _engine.CancelTaskAsync(taskId);
+    }
+
+    public IReadOnlyList<string> GetActiveTaskIds()
+    {
+        return _engine.GetActiveTaskIds();
+    }
+
     public void Dispose()
     {
         _engine.Dispose();

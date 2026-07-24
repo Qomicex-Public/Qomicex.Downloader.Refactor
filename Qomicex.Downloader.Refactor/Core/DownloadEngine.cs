@@ -150,22 +150,34 @@ internal sealed class DownloadEngine : IDisposable
         IReadOnlyList<DownloadTask> tasks,
         CancellationToken ct = default)
     {
-        var tasksList = new List<(DownloadTask Task, TaskTracker Tracker)>(tasks.Count);
-        foreach (var t in tasks)
+        var semaphore = new SemaphoreSlim(16);
+        var probeTasks = tasks.Select(async t =>
         {
-            var tracker = CreateTracker(t);
-            var fileSize = await ProbeFileSizeAsync(t, ct);
-            if (fileSize.HasValue)
-                tracker.TotalBytes = fileSize.Value;
+            await semaphore.WaitAsync(ct);
+            try
+            {
+                var tracker = CreateTracker(t);
+                var fileSize = await ProbeFileSizeAsync(t, ct);
+                if (fileSize.HasValue)
+                    tracker.TotalBytes = fileSize.Value;
 
-            var units = CreateUnits(t, fileSize, isFallback: false);
-            tracker.Units = units;
-            tasksList.Add((t, tracker));
+                var units = CreateUnits(t, fileSize, isFallback: false);
+                tracker.Units = units;
+                return (Task: t, Tracker: tracker, Units: units);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        });
+
+        var tasksList = (await Task.WhenAll(probeTasks)).ToList();
+
+        foreach (var (_, _, units) in tasksList)
             await EnqueueUnitsAsync(units, ct);
-        }
 
         var results = new List<DownloadResult>(tasks.Count);
-        foreach (var (_, tracker) in tasksList)
+        foreach (var (_, tracker, _) in tasksList)
         {
             using var reg = ct.Register(() => tracker.Tcs.TrySetCanceled(ct));
             results.Add(await tracker.Tcs.Task);
@@ -180,15 +192,6 @@ internal sealed class DownloadEngine : IDisposable
             if (_paused) return;
             _paused = true;
             _pauseTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-
-        foreach (var tracker in _trackers.Values)
-        {
-            foreach (var unit in tracker.Units)
-            {
-                if (unit.Status == DownloadUnitStatus.Downloading)
-                    unit.Cts.Cancel();
-            }
         }
     }
 
@@ -224,6 +227,28 @@ internal sealed class DownloadEngine : IDisposable
         }
 
         while (_workChannel.Reader.TryRead(out _)) { }
+    }
+
+    public async Task CancelTaskAsync(string taskId)
+    {
+        if (!_trackers.TryRemove(taskId, out var tracker))
+            return;
+
+        if (tracker.State == TaskState.Finalized)
+            return;
+
+        foreach (var unit in tracker.Units)
+            unit.Cts.Cancel();
+
+        await Task.Delay(100);
+
+        if (tracker.State != TaskState.Finalized)
+            FinalizeTracker(tracker, success: false);
+    }
+
+    public IReadOnlyList<string> GetActiveTaskIds()
+    {
+        return _trackers.Keys.Where(k => _trackers.TryGetValue(k, out var t) && t.State != TaskState.Finalized).ToArray();
     }
 
     private async Task EnqueueUnitsAsync(List<DownloadUnit> units, CancellationToken ct)
@@ -286,6 +311,8 @@ internal sealed class DownloadEngine : IDisposable
     {
         try
         {
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
             var mirrors = GetMirrorUrls(task);
             foreach (var mirror in mirrors)
             {
@@ -298,14 +325,28 @@ internal sealed class DownloadEngine : IDisposable
                         foreach (var (k, v) in mergedHeaders)
                             request.Headers.TryAddWithoutValidation(k, v);
                     }
-                    using var response = await _httpClient.SendAsync(request, ct);
+                    using var response = await _httpClient.SendAsync(request, linkedCts.Token);
                     if (response.IsSuccessStatusCode && response.Content.Headers.ContentLength.HasValue)
                         return response.Content.Headers.ContentLength.Value;
                 }
-                catch { }
+                catch (OperationCanceledException)
+                {
+                    Log(task.Id, LogLevel.Warning, $"HEAD probe timed out for {mirror}");
+                }
+                catch (Exception ex)
+                {
+                    Log(task.Id, LogLevel.Warning, $"HEAD probe failed for {mirror}: {ex.Message}");
+                }
             }
         }
-        catch { }
+        catch (OperationCanceledException)
+        {
+            Log(task.Id, LogLevel.Warning, "HEAD probe cancelled");
+        }
+        catch (Exception ex)
+        {
+            Log(task.Id, LogLevel.Error, $"HEAD probe error: {ex.Message}");
+        }
 
         return null;
     }
