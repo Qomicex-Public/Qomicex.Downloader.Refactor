@@ -12,7 +12,7 @@ internal class HttpFileFetcher
 
     private static readonly HashSet<string> RestrictedHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Range", "Host"
+        "Range", "Host", "Connection", "Transfer-Encoding", "Keep-Alive"
     };
 
     public HttpFileFetcher(HttpClient httpClient)
@@ -37,13 +37,9 @@ internal class HttpFileFetcher
             request.Options.Set(new HttpRequestOptionsKey<string>(ConnectIpKey), connectIp);
 
         if (endOffset.HasValue)
-        {
             request.Headers.Range = new RangeHeaderValue(startOffset, endOffset.Value);
-        }
         else if (startOffset > 0)
-        {
             request.Headers.Range = new RangeHeaderValue(startOffset, null);
-        }
 
         if (headers is not null)
         {
@@ -51,7 +47,7 @@ internal class HttpFileFetcher
             {
                 if (RestrictedHeaders.Contains(key))
                     continue;
-                request.Headers.TryAddWithoutValidation(key, value);
+                ApplyHeader(request, key, value);
             }
         }
 
@@ -75,6 +71,31 @@ internal class HttpFileFetcher
         }
 
         return totalRead;
+    }
+
+    private static void ApplyHeader(HttpRequestMessage request, string key, string value)
+    {
+        if (string.Equals(key, "User-Agent", StringComparison.OrdinalIgnoreCase))
+        {
+            request.Headers.UserAgent.Clear();
+            request.Headers.UserAgent.ParseAdd(value);
+            return;
+        }
+
+        if (string.Equals(key, "Accept", StringComparison.OrdinalIgnoreCase))
+        {
+            request.Headers.Accept.Clear();
+            request.Headers.Accept.ParseAdd(value);
+            return;
+        }
+
+        if (string.Equals(key, "Referer", StringComparison.OrdinalIgnoreCase))
+        {
+            request.Headers.Referrer = new Uri(value);
+            return;
+        }
+
+        request.Headers.TryAddWithoutValidation(key, value);
     }
 
     public static Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>> CreateConnectCallback()

@@ -213,9 +213,10 @@ internal sealed class DownloadEngine : IDisposable
                 try
                 {
                     using var request = new HttpRequestMessage(HttpMethod.Head, mirror);
-                    if (task.Headers is not null)
+                    var mergedHeaders = GetMergedHeaders(task);
+                    if (mergedHeaders is not null)
                     {
-                        foreach (var (k, v) in task.Headers)
+                        foreach (var (k, v) in mergedHeaders)
                             request.Headers.TryAddWithoutValidation(k, v);
                     }
                     using var response = await _httpClient.SendAsync(request, ct);
@@ -228,6 +229,31 @@ internal sealed class DownloadEngine : IDisposable
         catch { }
 
         return null;
+    }
+
+    private Dictionary<string, string>? GetMergedHeaders(DownloadTask task)
+    {
+        var hasGlobal = _options.DefaultUserAgent is not null || _options.DefaultHeaders is { Count: > 0 };
+        if (!hasGlobal)
+            return task.Headers;
+
+        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (_options.DefaultHeaders is not null)
+        {
+            foreach (var (k, v) in _options.DefaultHeaders)
+                merged[k] = v;
+        }
+
+        if (_options.DefaultUserAgent is not null)
+            merged["User-Agent"] = _options.DefaultUserAgent;
+
+        if (task.Headers is not null)
+        {
+            foreach (var (k, v) in task.Headers)
+                merged[k] = v;
+        }
+
+        return merged;
     }
 
     private static IReadOnlyList<string> GetMirrorUrls(DownloadTask task)
@@ -281,7 +307,7 @@ internal sealed class DownloadEngine : IDisposable
                             fetcherEndOffset,
                             fileStream,
                             0,
-                            unit.ParentTask.Headers,
+                            GetMergedHeaders(unit.ParentTask),
                             bestIp,
                             bytes =>
                             {

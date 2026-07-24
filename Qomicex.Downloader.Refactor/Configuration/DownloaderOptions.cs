@@ -18,6 +18,8 @@ public class DownloaderOptions
     public IProgress<Qomicex.Downloader.Refactor.Progress.GlobalProgressInfo>? GlobalProgress { get; set; }
     public IProgress<Qomicex.Downloader.Refactor.Progress.FileProgressInfo>? FileProgress { get; set; }
     public IProgress<Qomicex.Downloader.Refactor.Progress.DownloadLogEntry>? LogProgress { get; set; }
+    public string? DefaultUserAgent { get; set; }
+    public Dictionary<string, string>? DefaultHeaders { get; set; }
 }
 
 public class PerUrlRetryConfig

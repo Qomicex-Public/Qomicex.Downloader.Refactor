@@ -68,6 +68,18 @@ public class DownloaderBuilder
         return this;
     }
 
+    public DownloaderBuilder WithUserAgent(string userAgent)
+    {
+        _options.DefaultUserAgent = userAgent;
+        return this;
+    }
+
+    public DownloaderBuilder WithDefaultHeaders(Dictionary<string, string> headers)
+    {
+        _options.DefaultHeaders = headers;
+        return this;
+    }
+
     public DownloaderOptions Build()
     {
         return _options;
