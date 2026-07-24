@@ -1,6 +1,6 @@
 # Qomicex Downloader Refactor
 
-面向 **Minecraft 启动器**的高性能多文件下载器类库。支持 3000+ 小文件、64 线程高并发、动态切片、智能镜像选择、自动重试与看门狗保护，AOT 全量编译兼容。
+面向 **Minecraft 启动器**的高性能多文件下载器类库。支持 3000+ 小文件、64 线程高并发、动态切片、智能镜像选择、IP 直连、自定义 UA/Headers、自动重试与看门狗保护，AOT 全量编译兼容。
 
 ---
 
@@ -10,9 +10,10 @@
 |:---|:---|
 | **全局任务队列** | `Channel<T>` 无界队列，64 Worker 并发消费，支持运行时动态追加任务 |
 | **动态切片** | HEAD 探测文件大小，>10MB 按 8–16MB 智能分片并行下载，小文件单请求直传 |
-| **智能镜像选择** | `SpeedCache` 基于 EMA 滑动平滑测速，`MirrorSelector` 按历史速度降序排列 URL，自动择优 |
+| **智能镜像选择** | DNS 解析 → 按 IP 粒度 EMA 测速 → 最优节点排序 → `ConnectCallback` 直连，精准避免慢节点 |
 | **自动重试** | 分片级重试（耗尽后降级为整文件重试），支持按 URL 独立配置重试次数与间隔 |
 | **看门狗** | 2s 周期扫描，30s 无数据判定卡死，速度持续低于全局均速 ×0.3 判定龟速，自动 Cancel + 重建 |
+| **自定义 UA / Headers** | 全局默认 + 任务级覆盖，完整支持 `User-Agent`、`Authorization`、`Accept` 等强类型 Header |
 | **进度回调** | `IProgress<GlobalProgressInfo>` / `IProgress<FileProgressInfo>` / `IProgress<DownloadLogEntry>` 三级报告 |
 | **AOT 兼容** | 零反射，手写 DI 容器，`System.Threading.Channels`（BLC 原生），完整支持 Native AOT 发布 |
 | **灵活配置** | Fluent API（`DownloaderBuilder`）+ Options 对象双重支持 |
@@ -25,24 +26,25 @@
 Qomicex.Downloader.Refactor.slnx              # 解决方案
 ├── Qomicex.Downloader.Refactor/              # 核心类库（net10.0）
 │   ├── Model/
-│   │   ├── DownloadTask.cs                   # 下载任务
+│   │   ├── DownloadTask.cs                   # 下载任务（URL、路径、镜像、Headers）
 │   │   ├── DownloadResult.cs                 # 下载结果
 │   │   ├── DownloadChunk.cs                  # 切片信息
 │   │   └── DownloadUnit.cs                   # 内部调度单元
 │   ├── Configuration/
-│   │   ├── DownloaderOptions.cs              # 配置选项（并发、切片、重试、看门狗）
+│   │   ├── DownloaderOptions.cs              # 配置选项（并发、切片、重试、看门狗、UA/Headers）
 │   │   ├── DownloaderBuilder.cs              # Fluent 构建器
 │   │   └── RetryPolicy.cs                   # 重试策略（含按 URL 独立规则）
 │   ├── Core/
 │   │   ├── DownloadEngine.cs                 # 核心调度器（Channel 管线 + 64 Worker）
 │   │   ├── ChunkStrategy.cs                  # 动态切片策略
-│   │   ├── MirrorSelector.cs                # 智能镜像选择
-│   │   ├── SpeedCache.cs                    # URL 测速缓存（EMA 平滑）
+│   │   ├── MirrorSelector.cs                # DNS 解析 + IP 粒度智能镜像选择
+│   │   ├── DnsResolver.cs                   # DNS 解析缓存层（2 分钟 TTL）
+│   │   ├── SpeedCache.cs                    # IP 粒度测速缓存（EMA 平滑）
 │   │   ├── SpeedTracker.cs                  # 实时速度追踪（滑动窗口 + EMA）
 │   │   ├── Watchdog.cs                      # 看门狗（卡死/龟速检测 → Cancel）
 │   │   └── WatchdogConfig.cs               # 看门狗配置
 │   ├── Http/
-│   │   └── HttpFileFetcher.cs              # HTTP Range 请求下载器
+│   │   └── HttpFileFetcher.cs              # HTTP Range 请求 + IP 直连 + Header 处理
 │   ├── Progress/
 │   │   ├── GlobalProgressInfo.cs            # 全局进度
 │   │   ├── FileProgressInfo.cs             # 单文件进度
@@ -50,8 +52,8 @@ Qomicex.Downloader.Refactor.slnx              # 解决方案
 │   ├── Container.cs                         # 手写 DI 容器（AOT 兼容）
 │   └── Downloader.cs                        # 公开门面（ILibrary 入口）
 │
-└── Qomicex.Downloader.Refactor.Console/     # 控制台项目（使用示例 / AOT 测试）
-    └── Program.cs
+└── Qomicex.Downloader.Refactor.Console/     # 控制台测试项目（AOT 兼容）
+    └── Program.cs                           # 5 组完整功能测试
 ```
 
 ---
@@ -73,17 +75,11 @@ using Qomicex.Downloader.Refactor;
 using Qomicex.Downloader.Refactor.Model;
 using Qomicex.Downloader.Refactor.Progress;
 
-// 创建下载器
 var downloader = new Downloader(builder => builder
     .WithMaxConcurrency(64)
     .WithRetry(maxRetries: 3, delay: TimeSpan.FromSeconds(1))
-    .WithWatchdog(
-        lowSpeedFactor: 0.3,
-        stuckTimeout: TimeSpan.FromSeconds(30),
-        minSlowDuration: TimeSpan.FromSeconds(10),
-        interval: TimeSpan.FromSeconds(2)));
+    .WithUserAgent("QomicexLauncher/1.0"));
 
-// 构造下载任务
 var tasks = new List<DownloadTask>
 {
     new()
@@ -93,19 +89,17 @@ var tasks = new List<DownloadTask>
         MirrorUrls = new[]
         {
             "https://download.mcbbs.net/version/1.21/client.jar",
-            "https://piston-meta.mojang.com/..."
         }
     }
 };
 
-// 批量下载
 var results = await downloader.DownloadBatchAsync(tasks);
 
 foreach (var r in results)
 {
     Console.WriteLine(r.IsSuccess
-        ? $"✓ {r.TaskId} — {r.DownloadedBytes / 1024}KB, {r.Elapsed.TotalSeconds:F1}s"
-        : $"✗ {r.TaskId} — {r.ErrorMessage}");
+        ? $"OK {r.TaskId} — {r.DownloadedBytes / 1024}KB, {r.Elapsed.TotalSeconds:F1}s"
+        : $"FAIL {r.TaskId} — {r.ErrorMessage}");
 }
 
 downloader.Dispose();
@@ -117,7 +111,7 @@ downloader.Dispose();
 var globalProgress = new Progress<GlobalProgressInfo>(info =>
 {
     Console.WriteLine($"进度: {info.CompletedTasks}/{info.TotalTasks} "
-        + $"({info.GlobalSpeedBytesPerSec / 1024:F0} KB/s)");
+        + $"({info.GlobalSpeedBytesPerSec / 1024:F0} KB/s) 活跃:{info.ActiveDownloads}");
 });
 
 var fileProgress = new Progress<FileProgressInfo>(info =>
@@ -138,15 +132,60 @@ var downloader = new Downloader(builder => builder
 var results = await downloader.DownloadBatchAsync(tasks);
 ```
 
+### 自定义 UA 与 Headers
+
+```csharp
+var downloader = new Downloader(builder => builder
+    .WithUserAgent("QomicexLauncher/1.0")
+    .WithDefaultHeaders(new()
+    {
+        ["X-Client-Version"] = "2.1.0",
+    }));
+
+var task = new DownloadTask
+{
+    Url = "https://api.example.com/private/resource",
+    SavePath = "resource.bin",
+    Headers = new()
+    {
+        ["Authorization"] = "Bearer sk-xxxxx",
+        ["X-Request-Id"] = Guid.NewGuid().ToString(),
+    },
+};
+
+// 实际发送的 Headers（任务级覆盖全局同名 Header）:
+// User-Agent: QomicexLauncher/1.0
+// X-Client-Version: 2.1.0
+// Authorization: Bearer sk-xxxxx
+// X-Request-Id: a1b2c3d4...
+
+await downloader.DownloadAsync(task);
+```
+
+### 支持的强类型 Header
+
+以下 Header 通过各自的类型化属性设置，确保与 .NET HTTP 栈完全兼容：
+
+| Header | 设置方式 |
+|:---|:---|
+| `User-Agent` | `request.Headers.UserAgent.ParseAdd(value)` |
+| `Authorization` | `request.Headers.Authorization = AuthenticationHeaderValue.Parse(value)` |
+| `Accept` | `request.Headers.Accept.ParseAdd(value)` |
+| `Referer` | `request.Headers.Referrer = new Uri(value)` |
+| 其他 Header | `request.Headers.TryAddWithoutValidation(key, value)` |
+
+受限 Header（`Range`、`Host`、`Connection`、`Transfer-Encoding`、`Keep-Alive`）会被自动过滤。
+
 ### 动态追加任务
 
 ```csharp
-// 主批次启动后，可随时追加
 var task1 = downloader.DownloadAsync(new DownloadTask
 {
     Url = "https://example.com/mod.jar",
     SavePath = @"C:\Minecraft\mods\mod.jar"
 });
+
+await Task.Delay(300);
 
 var task2 = downloader.DownloadAsync(new DownloadTask
 {
@@ -175,14 +214,15 @@ var downloader = new Downloader(builder => builder
 var options = new DownloaderOptions
 {
     MaxConcurrency = 64,
-    ChunkThresholdBytes = 10 * 1024 * 1024,    // 10MB
-    MinChunkSize = 8 * 1024 * 1024,            // 8MB
-    MaxChunkSize = 16 * 1024 * 1024,           // 16MB
+    ChunkThresholdBytes = 10 * 1024 * 1024,
+    MinChunkSize = 8 * 1024 * 1024,
+    MaxChunkSize = 16 * 1024 * 1024,
     DefaultMaxRetries = 3,
     DefaultRetryDelay = TimeSpan.FromSeconds(1),
+    DefaultUserAgent = "QomicexLauncher/1.0",
+    DefaultHeaders = new() { ["X-Custom"] = "value" },
     LowSpeedFactor = 0.3,
     StuckTimeout = TimeSpan.FromSeconds(30),
-    MinSlowDuration = TimeSpan.FromSeconds(10),
 };
 
 var downloader = new Downloader(options);
@@ -205,22 +245,37 @@ var downloader = container.Resolve<Downloader>();
 ### 调度模型
 
 ```
-启动器（生产者）                    下载器（消费者）
-    │                                   │
+启动器（生产者）                        下载器（消费者）
+    │                                        │
     ├─ DownloadBatchAsync ──→ Channel<DownloadUnit> ──→ Worker ×64
-    ├─ DownloadAsync ──→                  │              │
-    │                                     │         ┌────┴────┐
-    │                                     │         │ Mirror? │
-    │                                     │         │ Chunk?  │
-    │                                     │         │ Retry?  │
-    │                                     │         └────┬────┘
-    │                                     │              │
-    │                                     │    Watchdog ─┤ 卡死/龟速
-    │                                     │              │   → Cancel
-    │                                     │              │
-    │                                     │    TaskTracker ─ 合并/降级
-    │                                     │              │
-    │  ←── IProgress<T> ──────────────── │              │
+    ├─ DownloadAsync ──→                       │              │
+    │                                          │         ┌────┴────┐
+    │                                          │         │ DNS→IP? │
+    │                                          │         │ Mirror? │
+    │                                          │         │ Chunk?  │
+    │                                          │         │ Retry?  │
+    │                                          │         └────┬────┘
+    │                                          │              │
+    │                                          │    Watchdog ─┤ 卡死/龟速
+    │                                          │              │   → Cancel
+    │                                          │              │
+    │                                          │  TaskTracker ─ 合并/降级
+    │                                          │              │
+    │  ←── IProgress<T> ───────────────────── │              │
+```
+
+### 镜像选择（IP 粒度）
+
+```
+对每个 URL:
+  1. DnsResolver.Resolve(hostname) → [IP₁, IP₂, ...]
+  2. 对每个 IP 查 SpeedCache → 取最优速度
+  3. 按最优 IP 速度降序排列 URL
+
+下载时:
+  4. HttpRequestMessage.Options["X-Connect-Ip"] = bestIp
+  5. SocketsHttpHandler.ConnectCallback → 直连该 IP
+  6. 下载完成 → SpeedCache.UpdateSpeed(ip, actualSpeed)
 ```
 
 ### 切片策略
@@ -257,13 +312,13 @@ var downloader = container.Resolve<Downloader>();
   否则正常                     → 继续监控
 ```
 
-### 镜像选择
+### Header 合并规则
 
 ```
-SpeedCache[URL] = EMA(历史瞬时速度, α=0.3)
-MirrorSelector.Sort(urls) = 按 SpeedCache 值降序
-(未知 URL = 0，置于末尾，首次探测后计入缓存)
+全局 DefaultHeaders → 全局 DefaultUserAgent → 任务级 Headers（覆盖）
 ```
+
+任务级 Header 始终覆盖全局同名 Header，实现全局默认 + 任务级细粒度控制。
 
 ---
 
@@ -278,6 +333,21 @@ dotnet publish -c Release -p:PublishAot=true
 - 手写 `Container` 替代 `Microsoft.Extensions.DependencyInjection`
 - `System.Threading.Channels` 为 BLC（Base Class Library）原生组件
 - `HttpClient` + `SocketsHttpHandler` 在 .NET 8+ 完整 AOT 支持
+- `ConnectCallback` + `HttpRequestOptions` 实现 IP 直连，无需反射
+
+---
+
+## 测试结果
+
+Console 项目包含 5 组完整功能测试：
+
+| 测试 | 说明 | 状态 |
+|:---|:---|:---|
+| 小文件批量下载 | 3 个 GitHub 文件（1–2KB），镜像 URL + SHA256 校验 | 通过 |
+| 大文件切片下载 | 100MB AppImage，64 并发切片下载 + SHA256 校验 | 通过 |
+| 智能镜像切换 | gh-proxy ↔ direct 自动择优 | 通过 |
+| 动态追加任务 | 运行时追加 3 个任务，并发完成 | 通过 |
+| QQ 高并发下载 | 2 文件共 516MB，64 并发，15.7s，32.8 MB/s，0 重试 | 通过 |
 
 ---
 
@@ -292,6 +362,8 @@ dotnet publish -c Release -p:PublishAot=true
 | `DefaultMaxRetries` | `int` | 3 | 默认重试次数 |
 | `DefaultRetryDelay` | `TimeSpan` | 1s | 默认重试间隔 |
 | `PerUrlRetryConfigs` | `Dictionary` | null | 按 URL 独立重试规则 |
+| `DefaultUserAgent` | `string` | null | 全局默认 User-Agent |
+| `DefaultHeaders` | `Dictionary` | null | 全局默认请求头 |
 | `LowSpeedFactor` | `double` | 0.3 | 龟速判定因子（×全局均速） |
 | `StuckTimeout` | `TimeSpan` | 30s | 卡死超时 |
 | `MinSlowDuration` | `TimeSpan` | 10s | 持续龟速最短判定时长 |
