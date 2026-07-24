@@ -8,16 +8,16 @@ internal class SpeedCache
 
     private const double Alpha = 0.3;
 
-    public void UpdateSpeed(string url, double bytesPerSec)
+    public void UpdateSpeed(string key, double bytesPerSec)
     {
         _cache.AddOrUpdate(
-            url,
+            key,
             bytesPerSec,
             (_, existing) => Alpha * bytesPerSec + (1.0 - Alpha) * existing);
     }
 
-    public double GetAverageSpeed(string url)
+    public double GetAverageSpeed(string key)
     {
-        return _cache.TryGetValue(url, out var speed) ? speed : 0;
+        return _cache.TryGetValue(key, out var speed) ? speed : 0;
     }
 }

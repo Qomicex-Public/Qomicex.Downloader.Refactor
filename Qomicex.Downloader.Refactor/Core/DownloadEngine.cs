@@ -42,6 +42,7 @@ internal sealed class DownloadEngine : IDisposable
     private readonly MirrorSelector _mirrorSelector;
     private readonly RetryPolicy _retryPolicy;
     private readonly Watchdog _watchdog;
+    private readonly DnsResolver _dnsResolver;
     private readonly SpeedCache _speedCache;
     private readonly SpeedTracker _globalSpeed;
 
@@ -62,6 +63,7 @@ internal sealed class DownloadEngine : IDisposable
             EnableMultipleHttp2Connections = true,
             AllowAutoRedirect = true,
             AutomaticDecompression = DecompressionMethods.All,
+            ConnectCallback = HttpFileFetcher.CreateConnectCallback(),
         };
         _httpClient = new HttpClient(_httpHandler)
         {
@@ -69,8 +71,9 @@ internal sealed class DownloadEngine : IDisposable
         };
         _fetcher = new HttpFileFetcher(_httpClient);
         _globalSpeed = new SpeedTracker(TimeSpan.FromSeconds(10));
+        _dnsResolver = new DnsResolver();
         _speedCache = new SpeedCache();
-        _mirrorSelector = new MirrorSelector(_speedCache);
+        _mirrorSelector = new MirrorSelector(_speedCache, _dnsResolver);
         _chunkStrategy = new ChunkStrategy(options.ChunkThresholdBytes, options.MinChunkSize, options.MaxChunkSize);
         _retryPolicy = new RetryPolicy(options);
         _watchdog = new Watchdog(WatchdogConfig.FromOptions(options), _globalSpeed);
@@ -247,7 +250,7 @@ internal sealed class DownloadEngine : IDisposable
         try
         {
             var mirrorUrls = GetMirrorUrls(unit.ParentTask);
-            var sortedMirrors = _mirrorSelector.SelectMirrors(mirrorUrls);
+            var sortedMirrors = await _mirrorSelector.SelectMirrorsAsync(mirrorUrls, engineCt);
             var retryCfg = _retryPolicy.GetConfigForUrl(unit.ParentTask.Url);
 
             var success = false;
@@ -255,7 +258,7 @@ internal sealed class DownloadEngine : IDisposable
 
             while (unit.Retries <= retryCfg.MaxRetries)
             {
-                var mirror = sortedMirrors[mirrorIdx % sortedMirrors.Count];
+                var (mirror, bestIp) = sortedMirrors[mirrorIdx % sortedMirrors.Count];
                 mirrorIdx++;
 
                 try
@@ -279,6 +282,7 @@ internal sealed class DownloadEngine : IDisposable
                             fileStream,
                             0,
                             unit.ParentTask.Headers,
+                            bestIp,
                             bytes =>
                             {
                                 unitSpeed.RecordBytes(bytes);
@@ -289,7 +293,8 @@ internal sealed class DownloadEngine : IDisposable
                             },
                             linkedCts.Token);
 
-                        _speedCache.UpdateSpeed(mirror, unitSpeed.CurrentSpeed);
+                        var speedKey = bestIp ?? mirror;
+                        _speedCache.UpdateSpeed(speedKey, unitSpeed.CurrentSpeed);
                     }
 
                     tracker.FinalMirror ??= mirror;

@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 
 namespace Qomicex.Downloader.Refactor.Http;
 
@@ -7,6 +8,7 @@ internal class HttpFileFetcher
     private readonly HttpClient _httpClient;
 
     private const int BufferSize = 80 * 1024;
+    internal const string ConnectIpKey = "X-Connect-Ip";
 
     private static readonly HashSet<string> RestrictedHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -25,10 +27,14 @@ internal class HttpFileFetcher
         Stream destination,
         long fileOffset,
         Dictionary<string, string>? headers,
+        string? connectIp,
         Action<long>? progressCallback,
         CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+        if (connectIp is not null)
+            request.Options.Set(new HttpRequestOptionsKey<string>(ConnectIpKey), connectIp);
 
         if (endOffset.HasValue)
         {
@@ -45,7 +51,6 @@ internal class HttpFileFetcher
             {
                 if (RestrictedHeaders.Contains(key))
                     continue;
-
                 request.Headers.TryAddWithoutValidation(key, value);
             }
         }
@@ -70,5 +75,24 @@ internal class HttpFileFetcher
         }
 
         return totalRead;
+    }
+
+    public static Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>> CreateConnectCallback()
+    {
+        return async (context, ct) =>
+        {
+            var request = context.InitialRequestMessage;
+            if (request?.Options.TryGetValue(
+                new HttpRequestOptionsKey<string>(ConnectIpKey), out var ip) == true && ip is not null)
+            {
+                var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+                await socket.ConnectAsync(ip, context.DnsEndPoint.Port, ct);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+
+            var defaultSocket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            await defaultSocket.ConnectAsync(context.DnsEndPoint, ct);
+            return new NetworkStream(defaultSocket, ownsSocket: true);
+        };
     }
 }
