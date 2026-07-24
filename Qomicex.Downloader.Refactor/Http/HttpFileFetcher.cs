@@ -95,6 +95,12 @@ internal class HttpFileFetcher
             return;
         }
 
+        if (string.Equals(key, "Authorization", StringComparison.OrdinalIgnoreCase))
+        {
+            request.Headers.Authorization = AuthenticationHeaderValue.Parse(value);
+            return;
+        }
+
         request.Headers.TryAddWithoutValidation(key, value);
     }
 
