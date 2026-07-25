@@ -475,12 +475,12 @@ internal sealed class DownloadEngine : IDisposable
                     if (unit.Retries > retryCfg.MaxRetries)
                     {
                         Log(unit.ParentTask.Id, LogLevel.Error,
-                            $"下载失败，重试次数已耗尽 ({unit.Retries}/{retryCfg.MaxRetries}): {ex.Message}");
+                            $"下载失败，重试次数已耗尽 ({unit.Retries}/{retryCfg.MaxRetries}): {ex.Message} | url={mirror} | path={unit.ParentTask.SavePath}");
                         break;
                     }
 
                     Log(unit.ParentTask.Id, LogLevel.Retry,
-                        $"下载失败，{retryCfg.RetryDelay.TotalSeconds:F1}s 后重试 ({unit.Retries}/{retryCfg.MaxRetries}): {ex.Message}");
+                        $"下载失败，{retryCfg.RetryDelay.TotalSeconds:F1}s 后重试 ({unit.Retries}/{retryCfg.MaxRetries}): {ex.Message} | url={mirror} | path={unit.ParentTask.SavePath}");
 
                     unit.Cts.Dispose();
                     unit.Cts = new CancellationTokenSource();
