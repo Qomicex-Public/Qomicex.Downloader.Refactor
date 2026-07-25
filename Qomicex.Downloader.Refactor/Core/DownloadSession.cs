@@ -81,8 +81,6 @@ public class DownloadSession : IDisposable
         int? maxConcurrency = null,
         IReadOnlyDictionary<string, string>? perBatchHeaders = null)
     {
-        using var batchDl = CreateDownloader(maxConcurrency ?? _options.MaxConcurrency, perBatchHeaders);
-
         var totalFiles = tasks.Count;
         lock (_lock)
         {
@@ -96,9 +94,7 @@ public class DownloadSession : IDisposable
         var fileProgress = new Progress<FileProgressInfo>(fp =>
         {
             if (fp.Status == FileProgressStatus.Downloading)
-            {
                 lock (_lock) { _currentFile = fp.FileName ?? ""; }
-            }
         });
 
         var globalProgress = new Progress<GlobalProgressInfo>(gp =>
@@ -112,6 +108,26 @@ public class DownloadSession : IDisposable
                 if (totalFiles > 0)
                     _progress = startPercent + (endPercent - startPercent) * completed / totalFiles;
             }
+        });
+
+        var mergedHeaders = new Dictionary<string, string>();
+        if (perBatchHeaders is not null)
+        {
+            foreach (var (k, v) in perBatchHeaders)
+                mergedHeaders[k] = v;
+        }
+
+        using var batchDl = new Downloader(builder =>
+        {
+            builder
+                .WithMaxConcurrency(maxConcurrency ?? _options.MaxConcurrency)
+                .WithRetry(_options.DefaultMaxRetries, _options.DefaultRetryDelay)
+                .WithProgress(globalProgress, fileProgress, _options.LogProgress)
+                .WithProgressInterval(_options.ProgressReportIntervalMs);
+            if (_options.UserAgent is not null)
+                builder.WithUserAgent(_options.UserAgent);
+            if (mergedHeaders.Count > 0)
+                builder.WithDefaultHeaders(mergedHeaders);
         });
 
         _cts ??= new CancellationTokenSource();
@@ -159,7 +175,25 @@ public class DownloadSession : IDisposable
 
         lock (_lock) { _status = "downloading"; }
 
-        using var singleDl = CreateDownloader(1, headers);
+        var mergedHeaders = new Dictionary<string, string>();
+        if (headers is not null)
+        {
+            foreach (var (k, v) in headers)
+                mergedHeaders[k] = v;
+        }
+
+        using var singleDl = new Downloader(builder =>
+        {
+            builder
+                .WithMaxConcurrency(1)
+                .WithRetry(_options.DefaultMaxRetries, _options.DefaultRetryDelay)
+                .WithProgress(null, fileProgress, _options.LogProgress)
+                .WithProgressInterval(_options.ProgressReportIntervalMs);
+            if (_options.UserAgent is not null)
+                builder.WithUserAgent(_options.UserAgent);
+            if (mergedHeaders.Count > 0)
+                builder.WithDefaultHeaders(mergedHeaders);
+        });
 
         _cts ??= new CancellationTokenSource();
         using var linkedCts = ct.CanBeCanceled
@@ -193,10 +227,7 @@ public class DownloadSession : IDisposable
 
     public void Cancel()
     {
-        lock (_lock)
-        {
-            _status = "cancelling";
-        }
+        lock (_lock) { _status = "cancelling"; }
         _cts?.Cancel();
     }
 
@@ -204,29 +235,5 @@ public class DownloadSession : IDisposable
     {
         _cts?.Cancel();
         _cts?.Dispose();
-    }
-
-    private Downloader CreateDownloader(int maxConcurrency, IReadOnlyDictionary<string, string>? extraHeaders)
-    {
-        return new Downloader(builder =>
-        {
-            builder
-                .WithMaxConcurrency(maxConcurrency)
-                .WithRetry(_options.DefaultMaxRetries, _options.DefaultRetryDelay)
-                .WithProgress(null, null, _options.LogProgress)
-                .WithProgressInterval(_options.ProgressReportIntervalMs);
-
-            if (_options.UserAgent is not null)
-                builder.WithUserAgent(_options.UserAgent);
-
-            var mergedHeaders = new Dictionary<string, string>();
-            if (extraHeaders is not null)
-            {
-                foreach (var (k, v) in extraHeaders)
-                    mergedHeaders[k] = v;
-            }
-            if (mergedHeaders.Count > 0)
-                builder.WithDefaultHeaders(mergedHeaders);
-        });
     }
 }
