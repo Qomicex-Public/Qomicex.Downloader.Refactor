@@ -228,12 +228,12 @@ public class DownloadSession : IDisposable
     public void Cancel()
     {
         lock (_lock) { _status = "cancelling"; }
-        _cts?.Cancel();
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+        try { _cts?.Dispose(); } catch (ObjectDisposedException) { }
     }
 }
