@@ -10,7 +10,7 @@ public class DownloadSession : IDisposable
 {
     private readonly DownloadSessionManagerOptions _options;
     private readonly object _lock = new();
-    private CancellationTokenSource? _cts;
+    private readonly CancellationTokenSource _cts;
 
     private string _status = "queued";
     private string _stage = "";
@@ -32,6 +32,7 @@ public class DownloadSession : IDisposable
         Type = type;
         InstanceId = instanceId;
         _options = options;
+        _cts = new CancellationTokenSource();
     }
 
     public void SetStage(string stage, double progress, string? currentFile = null)
@@ -130,7 +131,6 @@ public class DownloadSession : IDisposable
                 builder.WithDefaultHeaders(mergedHeaders);
         });
 
-        _cts ??= new CancellationTokenSource();
         using var linkedCts = ct.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token)
             : CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
@@ -195,7 +195,6 @@ public class DownloadSession : IDisposable
                 builder.WithDefaultHeaders(mergedHeaders);
         });
 
-        _cts ??= new CancellationTokenSource();
         using var linkedCts = ct.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token)
             : CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
@@ -228,12 +227,12 @@ public class DownloadSession : IDisposable
     public void Cancel()
     {
         lock (_lock) { _status = "cancelling"; }
-        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     public void Dispose()
     {
-        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
-        try { _cts?.Dispose(); } catch (ObjectDisposedException) { }
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        try { _cts.Dispose(); } catch (ObjectDisposedException) { }
     }
 }
