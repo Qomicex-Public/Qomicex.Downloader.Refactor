@@ -76,8 +76,8 @@ internal class Watchdog
                     continue;
                 }
 
-                if (entry.SpeedTracker.CurrentSpeed > 0 && _globalSpeedTracker.CurrentSpeed > 0
-                    && entry.SpeedTracker.CurrentSpeed < _globalSpeedTracker.CurrentSpeed * _config.LowSpeedFactor)
+                if (entry.SpeedTracker.CurrentSpeed > 0 && entry.SpeedTracker.PeakSpeed > 0
+                    && entry.SpeedTracker.CurrentSpeed < entry.SpeedTracker.PeakSpeed * _config.LowSpeedFactor)
                 {
                     if (entry.SlowStart == DateTime.MinValue)
                     {

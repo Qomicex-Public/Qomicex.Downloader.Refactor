@@ -129,11 +129,15 @@ public class DownloadSession : IDisposable
                 builder.WithUserAgent(_options.UserAgent);
             if (mergedHeaders.Count > 0)
                 builder.WithDefaultHeaders(mergedHeaders);
+            if (_options.PerUrlDownloadConfigs is { Count: > 0 })
+                builder.WithPerUrlDownloadConfig(_options.PerUrlDownloadConfigs);
         });
 
-        using var linkedCts = ct.CanBeCanceled
-            ? CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token)
-            : CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        if (ct.CanBeCanceled && ct.IsCancellationRequested)
+            System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] RunBatchAsync: ct already cancelled before linkedCts");
+        using var linkedCts = ct.CanBeCanceled && !ct.IsCancellationRequested
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+            : new CancellationTokenSource();
 
         var results = await batchDl.DownloadBatchAsync(tasks, linkedCts.Token);
 
@@ -144,8 +148,18 @@ public class DownloadSession : IDisposable
             {
                 var task = tasks.FirstOrDefault(t => t.Id == r.TaskId);
                 if (task is not null) failed.Add(task);
+                System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] Download failed: task={r.TaskId} mirror={r.FinalMirror} bytes={r.DownloadedBytes} err={r.ErrorMessage} retries={r.TotalRetries}");
+            }
+            else
+            {
+                System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] Download OK: task={r.TaskId} bytes={r.DownloadedBytes} elapsed={r.Elapsed.TotalSeconds:F1}s");
             }
         }
+
+        if (failed.Count > 0)
+            System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] Batch complete: {totalFiles - failed.Count}/{totalFiles} OK, {failed.Count} failed");
+        else
+            System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] Batch complete: all {totalFiles} OK");
 
         return new BatchResult(
             TotalTasks: totalFiles,
@@ -193,11 +207,15 @@ public class DownloadSession : IDisposable
                 builder.WithUserAgent(_options.UserAgent);
             if (mergedHeaders.Count > 0)
                 builder.WithDefaultHeaders(mergedHeaders);
+            if (_options.PerUrlDownloadConfigs is { Count: > 0 })
+                builder.WithPerUrlDownloadConfig(_options.PerUrlDownloadConfigs);
         });
 
-        using var linkedCts = ct.CanBeCanceled
-            ? CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token)
-            : CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        if (ct.CanBeCanceled && ct.IsCancellationRequested)
+            System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] RunSingleAsync: ct already cancelled before linkedCts");
+        using var linkedCts = ct.CanBeCanceled && !ct.IsCancellationRequested
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+            : new CancellationTokenSource();
 
         return await singleDl.DownloadAsync(task, linkedCts.Token);
     }
@@ -227,11 +245,13 @@ public class DownloadSession : IDisposable
     public void Cancel()
     {
         lock (_lock) { _status = "cancelling"; }
+        System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] Cancel() called\n{Environment.StackTrace}");
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     public void Dispose()
     {
+        System.Diagnostics.Trace.WriteLine($"[Session] [{Id}] Dispose() called\n{Environment.StackTrace}");
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
         try { _cts.Dispose(); } catch (ObjectDisposedException) { }
     }

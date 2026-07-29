@@ -38,6 +38,12 @@ public class DownloadSessionManagerBuilder
         return this;
     }
 
+    public DownloadSessionManagerBuilder WithPerUrlDownloadConfig(Dictionary<string, DownloadUrlConfig> configs)
+    {
+        _options.PerUrlDownloadConfigs = configs;
+        return this;
+    }
+
     public DownloadSessionManager Build()
     {
         return new DownloadSessionManager(_options);

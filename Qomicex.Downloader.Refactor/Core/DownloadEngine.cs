@@ -286,6 +286,10 @@ internal sealed class DownloadEngine : IDisposable
             };
         }
 
+        var urlConfig = GetUrlConfig(task.Url);
+        if (urlConfig?.SingleThreadDownload == true)
+            fileSize = 0;
+
         var chunks = _chunkStrategy.CalculateChunks(fileSize ?? 0);
         var units = new List<DownloadUnit>(chunks.Count);
 
@@ -327,11 +331,18 @@ internal sealed class DownloadEngine : IDisposable
                     }
                     using var response = await _httpClient.SendAsync(request, linkedCts.Token);
                     if (response.IsSuccessStatusCode && response.Content.Headers.ContentLength.HasValue)
+                    {
+                        Log(task.Id, LogLevel.Info, $"HEAD probe OK: {response.Content.Headers.ContentLength.Value} bytes for {mirror}");
                         return response.Content.Headers.ContentLength.Value;
+                    }
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                {
+                    Log(task.Id, LogLevel.Warning, $"HEAD probe timed out (5s) for {mirror}");
                 }
                 catch (OperationCanceledException)
                 {
-                    Log(task.Id, LogLevel.Warning, $"HEAD probe timed out for {mirror}");
+                    Log(task.Id, LogLevel.Warning, $"HEAD probe cancelled by external ct for {mirror}");
                 }
                 catch (Exception ex)
                 {
@@ -341,7 +352,7 @@ internal sealed class DownloadEngine : IDisposable
         }
         catch (OperationCanceledException)
         {
-            Log(task.Id, LogLevel.Warning, "HEAD probe cancelled");
+            Log(task.Id, LogLevel.Warning, "HEAD probe cancelled (outer)");
         }
         catch (Exception ex)
         {
@@ -384,6 +395,17 @@ internal sealed class DownloadEngine : IDisposable
         return urls;
     }
 
+    private DownloadUrlConfig? GetUrlConfig(string url)
+    {
+        if (_options.PerUrlDownloadConfigs is null) return null;
+        foreach (var (pattern, config) in _options.PerUrlDownloadConfigs)
+        {
+            if (url.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                return config;
+        }
+        return null;
+    }
+
     private async Task ProcessUnit(DownloadUnit unit, CancellationToken engineCt)
     {
         if (!_trackers.TryGetValue(unit.ParentTask.Id, out var tracker))
@@ -405,6 +427,9 @@ internal sealed class DownloadEngine : IDisposable
             while (unit.Retries <= retryCfg.MaxRetries)
             {
                 var (mirror, bestIp) = sortedMirrors[mirrorIdx % sortedMirrors.Count];
+                var urlConfig = GetUrlConfig(mirror);
+                if (urlConfig?.DisableDnsOptimization == true)
+                    bestIp = null;
                 mirrorIdx++;
 
                 try

@@ -9,6 +9,7 @@ public class DownloaderOptions
     public int DefaultMaxRetries { get; set; } = 3;
     public TimeSpan DefaultRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
     public Dictionary<string, PerUrlRetryConfig>? PerUrlRetryConfigs { get; set; }
+    public Dictionary<string, DownloadUrlConfig>? PerUrlDownloadConfigs { get; set; }
     public double LowSpeedFactor { get; set; } = 0.3;
     public TimeSpan StuckTimeout { get; set; } = TimeSpan.FromSeconds(30);
     public TimeSpan MinSlowDuration { get; set; } = TimeSpan.FromSeconds(10);
@@ -26,4 +27,10 @@ public class PerUrlRetryConfig
 {
     public int MaxRetries { get; set; }
     public TimeSpan RetryDelay { get; set; }
+}
+
+public class DownloadUrlConfig
+{
+    public bool DisableDnsOptimization { get; set; }
+    public bool SingleThreadDownload { get; set; }
 }

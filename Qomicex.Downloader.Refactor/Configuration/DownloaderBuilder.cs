@@ -36,6 +36,12 @@ public class DownloaderBuilder
         return this;
     }
 
+    public DownloaderBuilder WithPerUrlDownloadConfig(Dictionary<string, DownloadUrlConfig> configs)
+    {
+        _options.PerUrlDownloadConfigs = configs;
+        return this;
+    }
+
     public DownloaderBuilder WithWatchdog(double lowSpeedFactor, TimeSpan stuckTimeout, TimeSpan minSlowDuration, TimeSpan interval)
     {
         _options.LowSpeedFactor = lowSpeedFactor;

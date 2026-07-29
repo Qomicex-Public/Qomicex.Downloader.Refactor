@@ -8,6 +8,7 @@ internal class SpeedTracker
     private readonly object _lock = new();
     private readonly Queue<(DateTime Time, long Bytes)> _samples = new();
     private double _emaSpeed;
+    private double _peakSpeed;
     private long _totalBytes;
     private DateTime _lastActivity = DateTime.UtcNow;
 
@@ -21,6 +22,11 @@ internal class SpeedTracker
     public double CurrentSpeed
     {
         get { lock (_lock) return _emaSpeed; }
+    }
+
+    public double PeakSpeed
+    {
+        get { lock (_lock) return _peakSpeed; }
     }
 
     public long TotalBytes
@@ -53,6 +59,8 @@ internal class SpeedTracker
 
             double instantSpeed = windowBytes / _window.TotalSeconds;
             _emaSpeed = Alpha * instantSpeed + (1.0 - Alpha) * _emaSpeed;
+            if (instantSpeed > _peakSpeed)
+                _peakSpeed = instantSpeed;
         }
     }
 }

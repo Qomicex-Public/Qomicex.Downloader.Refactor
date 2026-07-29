@@ -8,4 +8,5 @@ public class DownloadSessionManagerOptions
     public TimeSpan DefaultRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
     public int ProgressReportIntervalMs { get; set; } = 200;
     public IProgress<Qomicex.Downloader.Refactor.Progress.DownloadLogEntry>? LogProgress { get; set; }
+    public Dictionary<string, DownloadUrlConfig>? PerUrlDownloadConfigs { get; set; }
 }
